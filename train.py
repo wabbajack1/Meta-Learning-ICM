@@ -35,6 +35,7 @@ def main():
         help='meta batch size, namely task num',
         default=32)
     argparser.add_argument('--seed', type=int, help='random seed', default=1)
+    argparser.add_argument("device", type=str, help="Device to use (cpu, cuda, mps)")
     args = argparser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -43,6 +44,7 @@ def main():
     np.random.seed(args.seed)
 
     # Set up the Omniglot loader.
+    
     device = torch.device('cpu' if torch.backends.mps.is_available() else 'mps')
     db = OmniglotNShot(
         '/tmp/omniglot-data',
@@ -68,6 +70,9 @@ def main():
         test(db, net, device, epoch, log)
         plot(log)
 
+        # Save the log.
+        with open('log.pkl', 'wb') as f:
+            pd.to_pickle(log, f)
 
 def train_curiosity(db, net, device, meta_opt, epoch, log, icm_weight, icm_model):
     net.train()

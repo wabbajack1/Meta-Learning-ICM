@@ -35,7 +35,7 @@ class Net(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-class ICM(nn.Module);
+class ICM(nn.Module):
     def __init__(self, input_dim, hidden_dim, action_dim):
         """We model the icm module in that way of meta learning exploration.
         input dimension is the size of the paramters.
