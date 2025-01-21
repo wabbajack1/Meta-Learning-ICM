@@ -20,12 +20,12 @@
 import  torchvision.transforms as transforms
 from    PIL import Image
 import  numpy as np
-
 import torch
 import  torch.utils.data as data
 import  os
 import  os.path
 import  errno
+from torch import nn
 
 
 class Omniglot(data.Dataset):
@@ -272,10 +272,10 @@ class OmniglotNShot:
 
             # [b, setsz, 1, 84, 84]
             x_spts = np.array(x_spts).astype(np.float32).reshape(self.batchsz, setsz, 1, self.resize, self.resize)
-            y_spts = np.array(y_spts).astype(np.int).reshape(self.batchsz, setsz)
+            y_spts = np.array(y_spts).astype(np.int32).reshape(self.batchsz, setsz)
             # [b, qrysz, 1, 84, 84]
             x_qrys = np.array(x_qrys).astype(np.float32).reshape(self.batchsz, querysz, 1, self.resize, self.resize)
-            y_qrys = np.array(y_qrys).astype(np.int).reshape(self.batchsz, querysz)
+            y_qrys = np.array(y_qrys).astype(np.int32).reshape(self.batchsz, querysz)
 
             x_spts, y_spts, x_qrys, y_qrys = [
                 torch.from_numpy(z).to(self.device) for z in
@@ -302,6 +302,15 @@ class OmniglotNShot:
 
         return next_batch
 
+def test_mlp(x):
+    mlp = nn.Sequential(
+        nn.Linear(28*28, 64),
+        nn.ReLU(),
+        nn.Linear(64, 64),
+        nn.ReLU(),
+        nn.Linear(64, 5)
+    )
+    return mlp.forward(x)
 
 if __name__ == '__main__':
     # craete a omniglot dataset
@@ -310,7 +319,7 @@ if __name__ == '__main__':
 
     db = OmniglotNShot(
         '/tmp/omniglot-data',
-        batchsz=20,
+        batchsz=32,
         n_way=5,
         k_shot=1,
         k_query=5,
@@ -322,13 +331,7 @@ if __name__ == '__main__':
     x_spt, y_spt, x_qry, y_qry = db.next()
     print(x_spt.shape, y_spt.shape, x_qry.shape, y_qry.shape)
 
-    task_num, setsz, c_, h, w = x_spt.size()
-
-    i = 0
-    for i in range(task_num):
-        print(x_spt[i].shape, y_spt[i].shape, x_qry[i].shape, y_qry[i].shape)
-        i += 1
-
-    print(i)
-
+    for x in x_spt:
+        test_mlp(x.view(setsz, -1))
+        break
     plt.show()

@@ -13,37 +13,30 @@ Short MAML: The **outer loop** updates the meta-initialization of the neural net
 - [Higher library video](https://www.youtube.com/watch?v=9XqP7zhYbMQ&t=62s)
 - [What are fast weights?](https://syncedreview.com/2017/02/08/geoffrey-hinton-using-fast-weights-to-store-temporary-memories/)
 
-
 ## M-Way-K-Shot Learning
 
 **M-way:** Die Anzahl der Klassen (oder Kategorien) in einer Aufgabe.
 
 **K-shot:** Die Anzahl der Beispiele, die für jede Klasse in der Aufgabe bereitgestellt werden.
 
-M-way K-shot Lernen umfasst Aufgaben, bei denen das Modell auf 
-𝑀 Klassen mit 
-𝐾 Beispielen pro Klasse als "Support Set" trainiert oder evaluiert wird.
+M-way K-shot Lernen umfasst Aufgaben, bei denen das Modell auf M Klassen mit K Beispielen pro Klasse als "Support Set" trainiert oder evaluiert wird.
 
 ## Komponenten
 
 ### Support Set
 
 Enthält 
-𝑀 × 𝐾 gekennzeichnete Beispiele.
+M x K gekennzeichnete Beispiele.
 
-Beispiel: Für eine 5-way 3-shot Aufgabe gibt es 
-5 Klassen, jede mit 
-3 gekennzeichneten Beispielen, was insgesamt 15 Beispiele ergibt.
+Beispiel: Für eine 5-way 3-shot Aufgabe gibt es 5 Klassen, jede mit 3 gekennzeichneten Beispielen, was insgesamt 15 Beispiele ergibt.
 
 Das Modell lernt die unterscheidenden Merkmale der Klassen aus diesem Set.
 
 ### Query Set
 
-Enthält nicht gekennzeichnete Beispiele aus denselben 
-𝑀 Klassen.
+Enthält nicht gekennzeichnete Beispiele aus denselben M Klassen.
 
 Die Aufgabe besteht darin, die Klasse jeder Abfrage basierend auf dem Support Set vorherzusagen.
-
 
 ## Experiments
 
@@ -52,7 +45,7 @@ Die Aufgabe besteht darin, die Klasse jeder Abfrage basierend auf dem Support Se
   - Here show it in a K-shot learning setting, i.e. after the meta-learning phase, we are able to learn a new task with only K examples.
   - But show its limitations, i.e. it doesn't generalize well when encountering tasks in a seqeuential manner, i.e. continual learning.
 - Meta-LSTM
-- My approach: **FAME (Fisher Information and MAML with Elastic Weight Consolidation)**
+- My approach: **FAME (Fisher Information and MAML with Elastic Weight Consolidation) + ICM**
   - Here the inner loop is augmented with Fisher Information Matrix, which is used to regularize the learning process.
 
 ## Ideas for new method
