@@ -330,4 +330,6 @@ if __name__ == '__main__':
     # fetch a batch of data and plot
     x_spt, y_spt, x_qry, y_qry = db.next()
     print(x_spt.shape, y_spt.shape, x_qry.shape, y_qry.shape)
-    print(y_spt)
+
+    x = torch.cat([x_spt, x_qry], dim=1)
+    print(x.shape)

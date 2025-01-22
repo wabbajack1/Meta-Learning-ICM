@@ -82,18 +82,25 @@ def main():
     meta_opt = optim.Adam(net.parameters(), lr=1e-3)
 
     # Create the ICM model
-    icm_model = ICM(input_dim=75205, hidden_dim=1024, action_dim=1024, fwd_hidden=1024, device)
+    icm_model = ICM(input_dim=75205, hidden_dim=1024, action_dim=1024, fwd_hidden=1024, device=device)
 
 
     log = []
     for epoch in range(100):
+
+        # Train the model
         if args.model_name == 'maml':
             train(db, net, device, meta_opt, epoch, log, inner_iters=args.inners_train)
-            test(db, net, device, epoch, log, inner_iters=args.inners_test)
         elif args.model_name == 'icm-maml':
             train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, inner_iters=args.inners_train)
-            test(db, net, device, epoch, log, inner_iters=args.inners_test)
-        
+        elif args.model_name == 'naive':
+            # Naive ==> just pretrain the model on the support set and test on the query set.
+            train_naive(db, net, device, meta_opt, epoch, log)
+
+        # evaluate the model, set the mode to 'test'        
+        test(db, net, device, epoch, log, inner_iters=args.inners_test)
+
+        # Plot the results.
         plot(log, setting_name=f"{args.n_way}-way-{args.k_spt}-shot", model_name=f"{args.model_name}")
 
         # Save the log.
@@ -250,6 +257,54 @@ def train(db, net, device, meta_opt, epoch, log, inner_iters=5):
             'time': time.time(),
         })
 
+def train_naive(db, net, device, meta_opt, epoch, log):
+    net.train()
+    n_train_iter = db.x_train.shape[0] // db.batchsz
+
+    # This is the same as the `train` function, but without the inner loop, hence the model is just pre-trained on the support set.
+    for batch_idx in range(n_train_iter):
+        start_time = time.time()
+        # Sample a batch of support and query images and labels.
+        x_spt, y_spt, x_qry, y_qry = db.next()
+        task_num, setsz, c_, h, w = x_spt.size()
+
+        # combine the support and query set to have a single batch, hence normal pre-training
+        data = torch.cat([x_spt, x_qry], dim=1)
+        labels = torch.cat([y_spt, y_qry], dim=1)
+
+        # Forward pass
+        logits = net(data)
+        loss = F.cross_entropy(logits, labels)
+        
+        # Backward pass and optimization
+        # consider that meta_opt is the optimizer for the model, even though it is not a meta-optimizer in this case, more like a normal optimizer in this setting.
+        meta_opt.zero_grad()
+        loss.backward()
+        meta_opt.step()
+        
+        # Calculate accuracy
+        acc = (logits.argmax(dim=1) == labels).sum().item() / labels.size(0)
+        
+        # Log the results
+        qry_losses.append(loss.item())
+        qry_accs.append(acc)
+
+        qry_losses = sum(qry_losses) / task_num
+        qry_accs = 100. * sum(qry_accs) / task_num
+        i = epoch + float(batch_idx) / n_train_iter
+        iter_time = time.time() - start_time
+        if batch_idx % 4 == 0:
+            print(
+                f'[Epoch {i:.2f}] Train Loss: {qry_losses:.2f} | Acc: {qry_accs:.2f} | Time: {iter_time:.2f}'
+            )
+
+        log.append({
+            'epoch': i,
+            'loss': qry_losses,
+            'acc': qry_accs,
+            'mode': 'train',
+            'time': time.time(),
+        })
 
 def test(db, net, device, epoch, log, inner_iters=5):
     # Crucially in our testing procedure here, we do *not* fine-tune
