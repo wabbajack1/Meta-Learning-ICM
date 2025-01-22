@@ -9,6 +9,8 @@ mpl.use('Agg')
 import matplotlib.pyplot as plt
 plt.style.use('bmh')
 import os
+import  torchvision.transforms as transforms
+from    PIL import Image
 
 import torch
 from torch import nn
@@ -18,7 +20,7 @@ import torch.optim as optim
 import higher
 import logging
 
-from omniglot_loaders import OmniglotNShot
+from omniglot_loaders import OmniglotNShot, Omniglot
 
 
 from model import Net, ICM
@@ -74,12 +76,29 @@ def main():
         device=device,
     )
 
+    if args.model_name == 'naive':
+        # load the whole omniglot dataset
+        data = Omniglot(
+        '/tmp/omniglot-data',
+        download=False,
+        transform=transforms.Compose(
+                    [lambda x: Image.open(x).convert('L'),
+                     lambda x: x.resize((28, 28)),
+                     lambda x: np.reshape(x, (28, 28, 1)),
+                     lambda x: np.transpose(x, [2, 0, 1]),
+                     lambda x: x/255.])
+        )
+        # split the dataset into train and test, but keep the first 1200 classes for training
+        data = torch.utils.data.random_split(data, [1200, len(data) - 1200])[0]
+        data_loader = torch.utils.data.DataLoader(data, batch_size=32, shuffle=True)
+
+
     # Create a vanilla PyTorch neural network that will be
     net = Net(args, device)
 
     # We will use Adam to (meta-)optimize the initial parameters
     # to be adapted.
-    meta_opt = optim.Adam(net.parameters(), lr=1e-3)
+    meta_opt = optim.Adam(net.parameters(), lr=1e-4)
 
     # Create the ICM model
     icm_model = ICM(input_dim=75205, hidden_dim=1024, action_dim=1024, fwd_hidden=1024, device=device)
@@ -98,7 +117,7 @@ def main():
             test(db, net, device, epoch, log, inner_iters=args.inners_test)
         elif args.model_name == 'naive':
             # Naive ==> just pretrain the model on the support set and test on the query set.
-            train_naive(db, net, device, meta_opt, epoch, log)
+            train_naive(data_loader, net, device, meta_opt, epoch, log)
             test(db, net, device, epoch, log, inner_iters=args.inners_test)
         
 
@@ -158,7 +177,7 @@ def train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, icm_opt, i
                     icm_opt.step()
 
                     # compute the total loss via the curiosity loss
-                    _lambda = 0.7
+                    _lambda = 4
                     forward_error = torch.log(forward_loss.detach() + 1.0)
                     total_loss = spt_loss + _lambda * forward_error
 
@@ -270,37 +289,29 @@ def train(db, net, device, meta_opt, epoch, log, inner_iters=5):
             'time': time.time(),
         })
 
-def train_naive(db, net, device, meta_opt, epoch, log):
+def train_naive(dataloader, net, device, meta_opt, epoch, log):
     net.train()
-    n_train_iter = db.x_train.shape[0] // db.batchsz
-
-    for batch_idx in range(n_train_iter):
+    for batch_idx, (x, y) in enumerate(dataloader):
+        x, y = x.to(device).float(), y.to(device).long()
         start_time = time.time()
-        # Sample a batch of support and query images and labels.
-        x_spt, y_spt, x_qry, y_qry = db.next(mode='train')
-        task_num, setsz, c_, h, w = x_spt.size()
-
-        x_spt = x_spt.view(-1, c_, h, w)
-        y_spt = y_spt.view(-1)
-
         loss = []
         acc = []
+
         meta_opt.zero_grad()
-        # for i in range(task_num):
-        logits = net(x_spt)
-        i_loss = F.cross_entropy(logits, y_spt)
-        loss.append(i_loss.detach())
-        i_acc = (logits.argmax(dim=1) == y_spt).sum().item() / x_spt.size(0)
+        logits = net(x)
+        # Ensure target labels are within the range of the number of classes
+        y = torch.clamp(y, 0, logits.size(1) - 1)
+        i_loss = F.cross_entropy(logits, y)
+        i_acc = (logits.argmax(dim=1) == y).sum().item() / x.size(0)
         acc.append(i_acc)
         i_loss.backward()
+        loss.append(i_loss.item())
 
-
-        # just pre train, meta_opt is in this case just a name and not used for meta training, its just naive pre training.
-        # Perform a step to update the model, i.e. accumulate the gradients
+        # Perform a step to update the model
         meta_opt.step()
-        loss = sum(loss)
-        acc = 100. * sum(acc)
-        i = epoch + float(batch_idx) / n_train_iter
+        loss = sum(loss) / len(loss)
+        acc = 100. * sum(acc) / len(acc)
+        i = epoch + float(batch_idx) / dataloader.__len__()
         iter_time = time.time() - start_time
         if batch_idx % 4 == 0:
             print(

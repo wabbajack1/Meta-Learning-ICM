@@ -327,12 +327,19 @@ if __name__ == '__main__':
         device=device,
     )
 
-    data = np.load(os.path.join("/tmp/omniglot-data", 'omniglot.npy'))
-    print(data.shape)
-    # fetch a batch of data
+    data = Omniglot(
+        '/tmp/omniglot-data',
+        download=False,
+        transform=transforms.Compose(
+                    [lambda x: Image.open(x).convert('L'),
+                     lambda x: x.resize((28, 28)),
+                     lambda x: np.reshape(x, (28, 28, 1)),
+                     lambda x: np.transpose(x, [2, 0, 1]),
+                     lambda x: x/255.])
+    )
 
-    for i in torch.utils.data.DataLoader(data, batch_size=32, shuffle=True):
-        print(i.shape)
+    data = torch.utils.data.random_split(data, [1200, len(data) - 1200])[0]
+    print(len(data))
 
     # # fetch a batch of data and plot
     # x_spt, y_spt, x_qry, y_qry = db.next()
