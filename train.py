@@ -22,7 +22,7 @@ from omniglot_loaders import OmniglotNShot
 
 
 from model import Net, ICM
-from helper import plot, compute_total_loss
+from helper import plot, compute_icm_loss
 
 def main():
 
@@ -44,7 +44,7 @@ def main():
     argparser.add_argument("--device", type=str, help="Device to use (cpu, cuda, mps)", default="mps")
     argparser.add_argument("--inners_train", type=int, help="Inner loop updates.", default=5)
     argparser.add_argument("--inners_test", type=int, help="Inner loop updates.", default=5)
-    argparser.add_argument("--model_name", type=str, help="Model name (maml, icm-maml)", default="maml")
+    argparser.add_argument("--model_name", type=str, help="Model name (maml, icm-maml, naive)", default="maml")
     args = argparser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -83,6 +83,7 @@ def main():
 
     # Create the ICM model
     icm_model = ICM(input_dim=75205, hidden_dim=1024, action_dim=1024, fwd_hidden=1024, device=device)
+    icm_opt = optim.SGD(icm_model.parameters(), lr=1e-3)
 
 
     log = []
@@ -91,14 +92,15 @@ def main():
         # Train the model
         if args.model_name == 'maml':
             train(db, net, device, meta_opt, epoch, log, inner_iters=args.inners_train)
+            test(db, net, device, epoch, log, inner_iters=args.inners_test)
         elif args.model_name == 'icm-maml':
-            train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, inner_iters=args.inners_train)
+            train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, icm_opt, inner_iters=args.inners_train)
+            test(db, net, device, epoch, log, inner_iters=args.inners_test)
         elif args.model_name == 'naive':
             # Naive ==> just pretrain the model on the support set and test on the query set.
             train_naive(db, net, device, meta_opt, epoch, log)
-
-        # evaluate the model, set the mode to 'test'        
-        test(db, net, device, epoch, log, inner_iters=args.inners_test)
+            test(db, net, device, epoch, log, inner_iters=args.inners_test)
+        
 
         # Plot the results.
         plot(log, setting_name=f"{args.n_way}-way-{args.k_spt}-shot", model_name=f"{args.model_name}")
@@ -108,7 +110,7 @@ def main():
         with open(f'logs/{args.model_name}-{args.n_way}-way-{args.k_spt}-log.pkl', 'wb') as f:
             pd.to_pickle(log, f)
 
-def train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, inner_iters=5):
+def train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, icm_opt, inner_iters=5):
     net.train()
     n_train_iter = db.x_train.shape[0] // db.batchsz
 
@@ -128,6 +130,7 @@ def train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, inner_iter
 
         qry_losses = []
         qry_accs = []
+        icm_losses = []
         meta_opt.zero_grad()
         for i in range(task_num):
             with higher.innerloop_ctx(net, inner_opt, copy_initial_weights=False) as (fmodel, diff_optim):
@@ -145,11 +148,20 @@ def train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, inner_iter
                     # simulate weight update without applying it yet (to compute s_t1)
                     s_t1 = s_t - torch.cat([g.flatten() * inner_opt.param_groups[0]['lr'] for g in grads])
 
-                    print(s_t.shape, a_t.shape, s_t1.shape)
-
                     # compute total loss
-                    total_loss = compute_total_loss(spt_loss, s_t, s_t1, a_t, icm_model)
+                    icm_loss, forward_loss = compute_icm_loss(s_t, s_t1, a_t, icm_model)
+                    icm_losses.append(icm_loss.detach())
                     
+                    # gradient step on the curiosity model
+                    icm_opt.zero_grad()
+                    icm_loss.backward()
+                    icm_opt.step()
+
+                    # compute the total loss via the curiosity loss
+                    _lambda = 0.7
+                    forward_error = torch.log(forward_loss.detach() + 1.0)
+                    total_loss = spt_loss + _lambda * forward_error
+
                     # perform a single weight update with the total loss
                     diff_optim.step(total_loss)
                 
@@ -170,13 +182,14 @@ def train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, inner_iter
 
         # Perform a meta-optimization step to update the model
         meta_opt.step()
+        icm_losses = sum(icm_losses) / task_num
         qry_losses = sum(qry_losses) / task_num
         qry_accs = 100. * sum(qry_accs) / task_num
         i = epoch + float(batch_idx) / n_train_iter
         iter_time = time.time() - start_time
         if batch_idx % 4 == 0:
             print(
-                f'[Epoch {i:.2f}] Train Loss: {qry_losses:.2f} | Acc: {qry_accs:.2f} | Time: {iter_time:.2f}'
+                f'[Epoch {i:.2f}] Train Loss: {qry_losses:.2f} | Curiosity Loss: {icm_losses:.2f} | Acc: {qry_accs:.2f} | Time: {iter_time:.2f}'
             )
 
         log.append({
@@ -261,50 +274,48 @@ def train_naive(db, net, device, meta_opt, epoch, log):
     net.train()
     n_train_iter = db.x_train.shape[0] // db.batchsz
 
-    # This is the same as the `train` function, but without the inner loop, hence the model is just pre-trained on the support set.
     for batch_idx in range(n_train_iter):
         start_time = time.time()
         # Sample a batch of support and query images and labels.
-        x_spt, y_spt, x_qry, y_qry = db.next()
+        x_spt, y_spt, x_qry, y_qry = db.next(mode='train')
         task_num, setsz, c_, h, w = x_spt.size()
 
-        # combine the support and query set to have a single batch, hence normal pre-training
-        data = torch.cat([x_spt, x_qry], dim=1)
-        labels = torch.cat([y_spt, y_qry], dim=1)
+        x_spt = x_spt.view(-1, c_, h, w)
+        y_spt = y_spt.view(-1)
 
-        # Forward pass
-        logits = net(data)
-        loss = F.cross_entropy(logits, labels)
-        
-        # Backward pass and optimization
-        # consider that meta_opt is the optimizer for the model, even though it is not a meta-optimizer in this case, more like a normal optimizer in this setting.
+        loss = []
+        acc = []
         meta_opt.zero_grad()
-        loss.backward()
-        meta_opt.step()
-        
-        # Calculate accuracy
-        acc = (logits.argmax(dim=1) == labels).sum().item() / labels.size(0)
-        
-        # Log the results
-        qry_losses.append(loss.item())
-        qry_accs.append(acc)
+        # for i in range(task_num):
+        logits = net(x_spt)
+        i_loss = F.cross_entropy(logits, y_spt)
+        loss.append(i_loss.detach())
+        i_acc = (logits.argmax(dim=1) == y_spt).sum().item() / x_spt.size(0)
+        acc.append(i_acc)
+        i_loss.backward()
 
-        qry_losses = sum(qry_losses) / task_num
-        qry_accs = 100. * sum(qry_accs) / task_num
+
+        # just pre train, meta_opt is in this case just a name and not used for meta training, its just naive pre training.
+        # Perform a step to update the model, i.e. accumulate the gradients
+        meta_opt.step()
+        loss = sum(loss)
+        acc = 100. * sum(acc)
         i = epoch + float(batch_idx) / n_train_iter
         iter_time = time.time() - start_time
         if batch_idx % 4 == 0:
             print(
-                f'[Epoch {i:.2f}] Train Loss: {qry_losses:.2f} | Acc: {qry_accs:.2f} | Time: {iter_time:.2f}'
+                f'[Epoch {i:.2f}] Train Loss: {loss:.2f} | Acc: {acc:.2f} | Time: {iter_time:.2f}'
             )
 
         log.append({
             'epoch': i,
-            'loss': qry_losses,
-            'acc': qry_accs,
+            'loss': loss,
+            'acc': acc,
             'mode': 'train',
             'time': time.time(),
         })
+
+
 
 def test(db, net, device, epoch, log, inner_iters=5):
     # Crucially in our testing procedure here, we do *not* fine-tune

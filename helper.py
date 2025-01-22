@@ -24,13 +24,12 @@ def plot(log, setting_name, model_name):
     fig.savefig(fname)
     plt.close(fig)
 
-def compute_total_loss(task_loss, s_t, s_t1, a_t, icm_model):
+def compute_icm_loss(s_t, s_t1, a_t, icm_model):
     beta = 0.7
-    icm_weight = 0.5
 
     # icm module pass
-    forward_error, backward_error = icm_model(s_t, a_t, s_t1)
+    forward_error, backward_error = icm_model(s_t.detach(), a_t.detach(), s_t1.detach())
 
     # Total loss
-    total_loss = task_loss + icm_weight * ( (beta * forward_error.mean() + (1-beta) * backward_error.mean()) - forward_error.detach().mean() )
-    return total_loss
+    loss = (beta * forward_error.mean()) + ((1-beta) * backward_error.mean())
+    return loss, forward_error.mean()

@@ -327,9 +327,16 @@ if __name__ == '__main__':
         device=device,
     )
 
-    # fetch a batch of data and plot
-    x_spt, y_spt, x_qry, y_qry = db.next()
-    print(x_spt.shape, y_spt.shape, x_qry.shape, y_qry.shape)
+    data = np.load(os.path.join("/tmp/omniglot-data", 'omniglot.npy'))
+    print(data.shape)
+    # fetch a batch of data
 
-    x = torch.cat([x_spt, x_qry], dim=1)
-    print(x.shape)
+    for i in torch.utils.data.DataLoader(data, batch_size=32, shuffle=True):
+        print(i.shape)
+
+    # # fetch a batch of data and plot
+    # x_spt, y_spt, x_qry, y_qry = db.next()
+    # print(x_spt.shape, y_spt.shape, x_qry.shape, y_qry.shape)
+
+    # x = torch.cat([x_spt, x_qry], dim=1)
+    # print(x.shape)
