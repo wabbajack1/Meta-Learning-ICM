@@ -1,7 +1,8 @@
 import matplotlib.pyplot as plt
 import pandas as pd
+import os
 
-def plot(log):
+def plot(log, setting_name, model_name):
     # Generally you should pull your plotting code out of your training
     # script but we are doing it here for brevity.
     df = pd.DataFrame(log)
@@ -16,15 +17,20 @@ def plot(log):
     ax.set_ylim(70, 100)
     fig.legend(ncol=2, loc='lower right')
     fig.tight_layout()
-    fname = 'maml-accs.png'
+
+    os.makedirs('plots', exist_ok=True)
+    fname = f'plots/{model_name}-{setting_name}-accs.png'
     print(f'--- Plotting accuracy to {fname}')
     fig.savefig(fname)
     plt.close(fig)
 
-def compute_total_loss(task_loss, s_t, s_t1, a_t, icm_model, icm_weight):
+def compute_total_loss(task_loss, s_t, s_t1, a_t, icm_model):
+    beta = 0.7
+    icm_weight = 0.5
+
     # icm module pass
     forward_error, backward_error = icm_model(s_t, a_t, s_t1)
 
     # Total loss
-    total_loss = task_loss + icm_weight * (forward_error.mean() + backward_error.mean())
+    total_loss = task_loss + icm_weight * ( (beta * forward_error.mean() + (1-beta) * backward_error.mean()) - forward_error.detach().mean() )
     return total_loss

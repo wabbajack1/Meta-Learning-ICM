@@ -8,6 +8,7 @@ import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as plt
 plt.style.use('bmh')
+import os
 
 import torch
 from torch import nn
@@ -15,14 +16,19 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 import higher
+import logging
 
 from omniglot_loaders import OmniglotNShot
 
 
-from model import Net
+from model import Net, ICM
 from helper import plot, compute_total_loss
 
 def main():
+
+    logging.basicConfig(level=logging.INFO)
+
+
     argparser = argparse.ArgumentParser()
     argparser.add_argument('--n_way', type=int, help='n way', default=5)
     argparser.add_argument(
@@ -35,7 +41,10 @@ def main():
         help='meta batch size, namely task num',
         default=32)
     argparser.add_argument('--seed', type=int, help='random seed', default=1)
-    argparser.add_argument("device", type=str, help="Device to use (cpu, cuda, mps)")
+    argparser.add_argument("--device", type=str, help="Device to use (cpu, cuda, mps)", default="mps")
+    argparser.add_argument("--inners_train", type=int, help="Inner loop updates.", default=5)
+    argparser.add_argument("--inners_test", type=int, help="Inner loop updates.", default=5)
+    argparser.add_argument("--model_name", type=str, help="Model name (maml, icm-maml)", default="maml")
     args = argparser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -45,7 +54,16 @@ def main():
 
     # Set up the Omniglot loader.
     
-    device = torch.device('cpu' if torch.backends.mps.is_available() else 'mps')
+    if args.device == 'mps':
+        device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    elif args.device == 'cuda':
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    else:
+        device = torch.device("cpu")
+    
+
+    logging.info(f"Using device {device}")
+    
     db = OmniglotNShot(
         '/tmp/omniglot-data',
         batchsz=args.task_num,
@@ -58,23 +76,32 @@ def main():
 
     # Create a vanilla PyTorch neural network that will be
     net = Net(args, device)
-    print(net.parameters())
 
     # We will use Adam to (meta-)optimize the initial parameters
     # to be adapted.
     meta_opt = optim.Adam(net.parameters(), lr=1e-3)
 
+    # Create the ICM model
+    icm_model = ICM(input_dim=75205, hidden_dim=1024, action_dim=1024, fwd_hidden=1024, device)
+
+
     log = []
     for epoch in range(100):
-        train(db, net, device, meta_opt, epoch, log)
-        test(db, net, device, epoch, log)
-        plot(log)
+        if args.model_name == 'maml':
+            train(db, net, device, meta_opt, epoch, log, inner_iters=args.inners_train)
+            test(db, net, device, epoch, log, inner_iters=args.inners_test)
+        elif args.model_name == 'icm-maml':
+            train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, inner_iters=args.inners_train)
+            test(db, net, device, epoch, log, inner_iters=args.inners_test)
+        
+        plot(log, setting_name=f"{args.n_way}-way-{args.k_spt}-shot", model_name=f"{args.model_name}")
 
         # Save the log.
-        with open('log.pkl', 'wb') as f:
+        os.makedirs('logs', exist_ok=True)
+        with open(f'logs/{args.model_name}-{args.n_way}-way-{args.k_spt}-log.pkl', 'wb') as f:
             pd.to_pickle(log, f)
 
-def train_curiosity(db, net, device, meta_opt, epoch, log, icm_weight, icm_model):
+def train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, inner_iters=5):
     net.train()
     n_train_iter = db.x_train.shape[0] // db.batchsz
 
@@ -89,7 +116,7 @@ def train_curiosity(db, net, device, meta_opt, epoch, log, icm_weight, icm_model
         task_num, setsz, c_, h, w = x_spt.size()
         querysz = x_qry.size(1)
 
-        n_inner_iter = 5
+        n_inner_iter = inner_iters
         inner_opt = torch.optim.SGD(net.parameters(), lr=1e-1)
 
         qry_losses = []
@@ -111,8 +138,10 @@ def train_curiosity(db, net, device, meta_opt, epoch, log, icm_weight, icm_model
                     # simulate weight update without applying it yet (to compute s_t1)
                     s_t1 = s_t - torch.cat([g.flatten() * inner_opt.param_groups[0]['lr'] for g in grads])
 
+                    print(s_t.shape, a_t.shape, s_t1.shape)
+
                     # compute total loss
-                    total_loss = compute_total_loss(spt_loss, s_t, s_t1, a_t, icm_model, icm_weight)
+                    total_loss = compute_total_loss(spt_loss, s_t, s_t1, a_t, icm_model)
                     
                     # perform a single weight update with the total loss
                     diff_optim.step(total_loss)
@@ -152,7 +181,7 @@ def train_curiosity(db, net, device, meta_opt, epoch, log, icm_weight, icm_model
         })
 
 
-def train(db, net, device, meta_opt, epoch, log):
+def train(db, net, device, meta_opt, epoch, log, inner_iters=5):
     net.train()
     n_train_iter = db.x_train.shape[0] // db.batchsz
 
@@ -169,7 +198,7 @@ def train(db, net, device, meta_opt, epoch, log):
 
         # Initialize the inner optimizer to adapt the parameters to
         # the support set.
-        n_inner_iter = 5
+        n_inner_iter = inner_iters
         inner_opt = torch.optim.SGD(net.parameters(), lr=1e-1)
 
         qry_losses = []
@@ -222,7 +251,7 @@ def train(db, net, device, meta_opt, epoch, log):
         })
 
 
-def test(db, net, device, epoch, log):
+def test(db, net, device, epoch, log, inner_iters=5):
     # Crucially in our testing procedure here, we do *not* fine-tune
     # the model during testing for simplicity.
     # Most research papers using MAML for this task do an extra
@@ -243,7 +272,7 @@ def test(db, net, device, epoch, log):
 
         # TODO: Maybe pull this out into a separate module so it
         # doesn't have to be duplicated between `train` and `test`?
-        n_inner_iter = 5
+        n_inner_iter = inner_iters
         inner_opt = torch.optim.SGD(net.parameters(), lr=1e-1)
 
         for i in range(task_num):
@@ -258,11 +287,9 @@ def test(db, net, device, epoch, log):
 
                 # The query loss and acc induced by these parameters.
                 qry_logits = fnet(x_qry[i]).detach()
-                qry_loss = F.cross_entropy(
-                    qry_logits, y_qry[i], reduction='none')
+                qry_loss = F.cross_entropy(qry_logits, y_qry[i], reduction='none')
                 qry_losses.append(qry_loss.detach())
-                qry_accs.append(
-                    (qry_logits.argmax(dim=1) == y_qry[i]).detach())
+                qry_accs.append((qry_logits.argmax(dim=1) == y_qry[i]).detach())
 
     qry_losses = torch.cat(qry_losses).mean().item()
     qry_accs = 100. * torch.cat(qry_accs).float().mean().item()

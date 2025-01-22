@@ -36,7 +36,7 @@ class Net(nn.Module):
         return self.net(x)
 
 class ICM(nn.Module):
-    def __init__(self, input_dim, hidden_dim, action_dim):
+    def __init__(self, input_dim, hidden_dim, action_dim, fwd_hidden, device):
         """We model the icm module in that way of meta learning exploration.
         input dimension is the size of the paramters.
         hidden dimension is the size of the hidden layer, more a another projection of the state.
@@ -50,29 +50,29 @@ class ICM(nn.Module):
 
         Args:
             input_dim (tensor): paramters size of the model (consider its should be flattened to be a vector)
-            hidden_dim (tensor): paramter is transformed to a hidden layer
-            action_dim (tensor): the size of the gradient
+            hidden_dim (tensor): paramter is transformed to a hidden layer.
+            action_dim (tensor): the size of the gradient in the hidden space.
         """
         super(ICM, self).__init__()
 
         self.embedding = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+            nn.Linear(input_dim, hidden_dim), # [batch_size, input_dim] -> [batch_size, hidden_dim], i.e. reduce the size of the input.
             nn.ReLU()
-        )
+        ).to(device)
 
         # keep in mind that the input_dim is the size of the state, and the output_dim is the size of one single action
         self.forward_model = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim*2, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, input_dim)
-        )
+            nn.Linear(hidden_dim, 1024)
+        ).to(device)
 
         # the output_dim is the size of the gradient
         self.inverse_model = nn.Sequential(
-            nn.Linear(input_dim*2, hidden_dim),
+            nn.Linear(hidden_dim*2, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, action_dim)
-        )
+        ).to(device)
 
     def forward(self, s_t, action, s_t1):
         """Here we define the forward and inverse model of the ICM module.
@@ -90,12 +90,20 @@ class ICM(nn.Module):
 
         s_t_emb = self.embedding(s_t)
         s_t1_emb = self.embedding(s_t1)
+        action_emb = self.embedding(action)
 
-        predicted_state = self.forward_model(torch.cat([s_t_emb, action], dim=-1))
+        assert s_t_emb.shape[0] == s_t1_emb.shape[0]
+        assert s_t_emb.shape[0] == action_emb.shape[0]
+
+        predicted_state = self.forward_model(torch.cat([s_t_emb, action_emb], dim=-1))
         predicted_action = self.inverse_model(torch.cat([s_t_emb, s_t1_emb], dim=-1))
 
-        forward_error = torch.norm(s_t1 - predicted_state, dim=-1, p=2, keepdim=True)
-        backward_error = torch.norm(action - predicted_action, dim=-1, p=2, keepdim=True)
+        # print(predicted_state.shape, predicted_action.shape)
+
+        forward_error = torch.norm(s_t1_emb - predicted_state, dim=-1, p=2, keepdim=True)
+        backward_error = torch.norm(action_emb - predicted_action, dim=-1, p=2, keepdim=True)
+
+        # print(forward_error, backward_error)
 
         return forward_error, backward_error
 
