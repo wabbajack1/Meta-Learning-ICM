@@ -89,7 +89,7 @@ def main():
                      lambda x: x/255.])
         )
         # split the dataset into train and test, but keep the first 1200 classes for training
-        data = torch.utils.data.random_split(data, [1200, len(data) - 1200])[0]
+        # data = torch.utils.data.random_split(data, [1200, len(data) - 1200])[0]
         data_loader = torch.utils.data.DataLoader(data, batch_size=32, shuffle=True)
 
 
@@ -98,7 +98,7 @@ def main():
 
     # We will use Adam to (meta-)optimize the initial parameters
     # to be adapted.
-    meta_opt = optim.Adam(net.parameters(), lr=1e-4)
+    meta_opt = optim.Adam(net.parameters(), lr=1e-3)
 
     # Create the ICM model
     icm_model = ICM(input_dim=75205, hidden_dim=1024, action_dim=1024, fwd_hidden=1024, device=device)
@@ -125,9 +125,14 @@ def main():
         plot(log, setting_name=f"{args.n_way}-way-{args.k_spt}-shot", model_name=f"{args.model_name}")
 
         # Save the log.
+        # Move all tensors in the log back to CPU
+        for entry in log:
+            for key in entry:
+                if isinstance(entry[key], torch.Tensor):
+                    entry[key] = entry[key].cpu()
+
         os.makedirs('logs', exist_ok=True)
-        with open(f'logs/{args.model_name}-{args.n_way}-way-{args.k_spt}-log.pkl', 'wb') as f:
-            pd.to_pickle(log, f)
+        torch.save(log, f'logs/{args.model_name}-{args.n_way}-way-{args.k_spt}-log.pt')
 
 def train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, icm_opt, inner_iters=5):
     net.train()
@@ -179,7 +184,8 @@ def train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, icm_opt, i
                     # compute the total loss via the curiosity loss
                     _lambda = 4
                     forward_error = torch.log(forward_loss.detach() + 1.0)
-                    total_loss = spt_loss + _lambda * forward_error
+                    backward_error = torch.log(icm_loss.detach() + 1.0)
+                    total_loss = spt_loss + _lambda * (forward_error+backward_error)
 
                     # perform a single weight update with the total loss
                     diff_optim.step(total_loss)
@@ -189,7 +195,7 @@ def train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, icm_opt, i
                 # These will be used to update the model's meta-parameters.
                 qry_logits = fmodel(x_qry[i])
                 qry_loss = F.cross_entropy(qry_logits, y_qry[i])
-                qry_losses.append(qry_loss.detach())
+                qry_losses.append(qry_loss.detach().item())
                 qry_acc = (qry_logits.argmax(dim=1) == y_qry[i]).sum().item() / querysz
                 qry_accs.append(qry_acc)
 
@@ -208,7 +214,12 @@ def train_curiosity(db, net, device, meta_opt, epoch, log, icm_model, icm_opt, i
         iter_time = time.time() - start_time
         if batch_idx % 4 == 0:
             print(
-                f'[Epoch {i:.2f}] Train Loss: {qry_losses:.2f} | Curiosity Loss: {icm_losses:.2f} | Acc: {qry_accs:.2f} | Time: {iter_time:.2f}'
+                f'[Epoch {i:.2f}] Train Loss: {qry_losses:.2f} 
+                    | Curiosity Loss: {icm_losses:.2f} 
+                    | Foward Error: {forward_error:.2f} 
+                    | Backward error {backward_error:.2f} 
+                    | Acc: {qry_accs:.2f} 
+                    | Time: {iter_time:.2f}'
             )
 
         log.append({
